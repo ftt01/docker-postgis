@@ -17,11 +17,12 @@ RECOVERY_CONF="$ROOT_CONF/recovery.conf"
 POSTGRES="/usr/lib/postgresql/${POSTGRES_MAJOR_VERSION}/bin/postgres"
 INITDB="/usr/lib/postgresql/${POSTGRES_MAJOR_VERSION}/bin/initdb"
 SQLDIR="/usr/share/postgresql/${POSTGRES_MAJOR_VERSION}/contrib/postgis-${POSTGIS_MAJOR}.${POSTGIS_MINOR_RELEASE}/"
+EXTDIR="/usr/share/postgresql/${POSTGRES_MAJOR_VERSION}/extension/"
 SETVARS="POSTGIS_ENABLE_OUTDB_RASTERS=1 POSTGIS_GDAL_ENABLED_DRIVERS=ENABLE_ALL"
 LOCALONLY="-c listen_addresses='127.0.0.1'"
-PG_BASEBACKUP="/usr/bin/pg_basebackup"
-PROMOTE_FILE="/tmp/pg_promote_master"
+PG_BASEBACKUP="/usr/lib/postgresql/${POSTGRES_MAJOR_VERSION}/bin/pg_basebackup"
 NODE_PROMOTION="/usr/lib/postgresql/${POSTGRES_MAJOR_VERSION}/bin/pg_ctl"
+DATA_DIR_CONTROL="/usr/lib/postgresql/${POSTGRES_MAJOR_VERSION}/bin/pg_controldata"
 PGSTAT_TMP="/var/run/postgresql/"
 PG_PID="/var/run/postgresql/${POSTGRES_MAJOR_VERSION}-main.pid"
 
@@ -33,7 +34,7 @@ PG_PID="/var/run/postgresql/${POSTGRES_MAJOR_VERSION}-main.pid"
 #    ie: file_env 'XYZ_DB_PASSWORD' 'example'
 # (will allow for "$XYZ_DB_PASSWORD_FILE" to fill in the value of
 #  "$XYZ_DB_PASSWORD" from a file, especially for Docker's secrets feature)
-function file_env {
+function file_env() {
 	local var="$1"
 	local fileVar="${var}_FILE"
 	local def="${2:-}"
@@ -64,15 +65,15 @@ function boolean() {
 
 file_env 'POSTGRES_PASS'
 file_env 'POSTGRES_USER'
-file_env 'POSTGRES_DBNAME'
+
 
 function create_dir() {
 DATA_PATH=$1
 
 if [[ ! -d ${DATA_PATH} ]];
 then
-    echo "Creating" ${DATA_PATH}  "directory"
-    mkdir -p ${DATA_PATH}
+    echo "Creating" "${DATA_PATH}"  "directory"
+    mkdir -p "${DATA_PATH}"
 fi
 }
 
@@ -80,9 +81,10 @@ function generate_random_string() {
   STRING_LENGTH=$1
   random_pass_string=$(cat /dev/urandom | tr -dc '[:alnum:]' | head -c "${STRING_LENGTH}")
   if [[ ! -f /scripts/.pass_${STRING_LENGTH}.txt ]]; then
-    echo ${random_pass_string} > /scripts/.pass_${STRING_LENGTH}.txt
+    echo "${random_pass_string}" > /scripts/.pass_"${STRING_LENGTH}".txt
   fi
-  export RAND=$(cat /scripts/.pass_${STRING_LENGTH}.txt)
+  RAND=$(cat /scripts/.pass_"${STRING_LENGTH}".txt)
+  export RAND
 }
 
 # Make sure we have a user set up
@@ -172,8 +174,8 @@ if [ -z "${IP_LIST}" ]; then
 	IP_LIST='*'
 fi
 
-if [ -z "${MAINTAINANCE_WORKERS}" ]; then
-	MAINTAINANCE_WORKERS=2
+if [ -z "${MAINTENANCE_WORKERS}" ]; then
+	MAINTENANCE_WORKERS=2
 fi
 
 if [ -z "${ARCHIVE_MODE}" ]; then
@@ -209,7 +211,7 @@ fi
 
 if [ -z "${ARCHIVE_CLEANUP_COMMAND}" ]; then
   # https://www.postgresql.org/docs/12/runtime-config-wal.html
-  ARCHIVE_CLEANUP_COMMAND="pg_archivecleanup ${WAL_ARCHIVE} %r"
+  ARCHIVE_CLEANUP_COMMAND="/usr/lib/postgresql/${POSTGRES_MAJOR_VERSION}/bin/pg_archivecleanup ${WAL_ARCHIVE} %r"
 fi
 
 if [ -z "${WAL_LEVEL}" ]; then
@@ -249,8 +251,8 @@ if [ -z "${MAX_WORKERS}" ]; then
 	MAX_WORKERS=4
 fi
 
-if [ -z "${MAINTAINANCE_WORK_MEM}" ]; then
-	MAINTAINANCE_WORK_MEM=128MB
+if [ -z "${MAINTENANCE_WORK_MEM}" ]; then
+	MAINTENANCE_WORK_MEM=128MB
 fi
 
 
@@ -327,11 +329,21 @@ if [ -z "$EXTRA_CONF" ]; then
     EXTRA_CONF=""
 fi
 
+if [ -z "$ACTIVATE_CRON" ]; then
+    ACTIVATE_CRON=TRUE
+fi
+
 if [ -z "${SHARED_PRELOAD_LIBRARIES}" ]; then
     if [[ $(dpkg -l | grep "timescaledb") > /dev/null ]];then
-        SHARED_PRELOAD_LIBRARIES='pg_cron,timescaledb'
+        if [[ ${ACTIVATE_CRON} =~ [Tt][Rr][Uu][Ee] ]];then
+          SHARED_PRELOAD_LIBRARIES='pg_cron,timescaledb'
+        else
+          SHARED_PRELOAD_LIBRARIES='timescaledb'
+        fi
     else
-        SHARED_PRELOAD_LIBRARIES='pg_cron'
+        if [[ ${ACTIVATE_CRON} =~ [Tt][Rr][Uu][Ee] ]];then
+          SHARED_PRELOAD_LIBRARIES='pg_cron'
+        fi
     fi
 fi
 
@@ -355,6 +367,14 @@ if [ -z "${TIMESCALE_TUNING_PARAMS}" ]; then
   TIMESCALE_TUNING_PARAMS=
 fi
 
+if [ -z "${TIMESCALE_TUNING_CONFIG}" ]; then
+  TIMESCALE_TUNING_CONFIG=time_scale_tuning.conf
+fi
+
+if [ -z "${RUN_AS_ROOT}" ]; then
+  RUN_AS_ROOT=true
+fi
+
 # Compatibility with official postgres variable
 # Official postgres variable gets priority
 if [ -n "${POSTGRES_PASSWORD}" ]; then
@@ -372,22 +392,34 @@ if [ -n "${POSTGRES_INITDB_ARGS}" ]; then
   INITDB_EXTRA_ARGS=${POSTGRES_INITDB_ARGS}
 fi
 
-list=(`echo ${POSTGRES_DBNAME} | tr ',' ' '`)
-arr=(${list})
-SINGLE_DB=${arr[0]}
+IFS=','
+read -a dbarr <<< "$POSTGRES_DBNAME"
+SINGLE_DB=${dbarr[0]}
+export ${SINGLE_DB}
 
 if [ -z "${TIMEZONE}" ]; then
   TIMEZONE='Etc/UTC'
 fi
 
+if [ -z "${KERNEL_SHMMAX}" ]; then
+  KERNEL_SHMMAX=543252480
+fi
+
+if [ -z "${KERNEL_SHMALL}" ]; then
+  KERNEL_SHMALL=2097152
+fi
+
+if [ -z "${PROMOTE_MASTER}" ]; then
+  PROMOTE_MASTER=FALSE
+fi
 # usable function definitions
 function kill_postgres {
-  PID=`cat ${PG_PID}`
-  kill -TERM ${PID}
+  PID=$(cat "${PG_PID}")
+  kill -TERM "${PID}"
 
   # Wait for background postgres main process to exit
   # wait until PID file gets deleted
-  while ls -A ${PG_PID} 2> /dev/null; do
+  while ls -A "${PG_PID}" 2> /dev/null; do
     sleep 1
   done
 
@@ -417,6 +449,8 @@ function restart_postgres {
 
 function entry_point_script {
   SETUP_LOCKFILE="${SCRIPTS_LOCKFILE_DIR}/.entry_point.lock"
+  IFS=','
+  read -a dbarr <<< "$POSTGRES_DBNAME"
   # If lockfile doesn't exists, proceed.
   if [[ ! -f "${SETUP_LOCKFILE}" ]] || [[ "${IGNORE_INIT_HOOK_LOCKFILE}" =~ [Tt][Rr][Uu][Ee] ]]; then
       if find "/docker-entrypoint-initdb.d" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
@@ -425,21 +459,22 @@ function entry_point_script {
           case "$f" in
                 *.sql)    echo "$0: running $f";
                   if [[ "${ALL_DATABASES}" =~ [Ff][Aa][Ll][Ss][Ee] ]]; then
-                      psql ${SINGLE_DB} -U ${POSTGRES_USER} -p 5432 -h localhost  -f ${f} || true
+                      psql "${SINGLE_DB}" -U ${POSTGRES_USER} -p 5432 -h localhost  -f "${f}" || true
                   else
-                      for db in $(echo ${POSTGRES_DBNAME} | tr ',' ' '); do
-                        psql ${db} -U ${POSTGRES_USER} -p 5432 -h localhost  -f ${f} || true
+                      for db in "${dbarr[@]}";do
+                        psql "${db}" -U ${POSTGRES_USER} -p 5432 -h localhost  -f "${f}" || true
                       done
                   fi;;
                 *.sql.gz) echo "$0: running $f";
                   if [[ "${ALL_DATABASES}" =~ [Ff][Aa][Ll][Ss][Ee] ]]; then
-                      gunzip < "$f" | psql ${SINGLE_DB} -U ${POSTGRES_USER} -p 5432 -h localhost || true
+                      gunzip < "$f" | psql "${SINGLE_DB}" -U ${POSTGRES_USER} -p 5432 -h localhost || true
                   else
-                      for db in $(echo ${POSTGRES_DBNAME} | tr ',' ' '); do
-                        gunzip < "$f" | psql ${db} -U ${POSTGRES_USER} -p 5432 -h localhost || true
+                      for db in "${dbarr[@]}";do
+                        gunzip < "$f" | psql "${db}" -U ${POSTGRES_USER} -p 5432 -h localhost || true
                       done
                   fi;;
-                *.sh)     echo "$0: running $f"; . $f || true;;
+                *.sh)     echo "$0: running $f"; . "$f" || true;;
+                *.py)     echo "$0: running $f"; python3 "$f" || true;;
                 *)        echo "$0: ignoring $f" ;;
             esac
             echo
@@ -454,23 +489,34 @@ function entry_point_script {
 
 function configure_replication_permissions {
 
-    echo "Setup data permissions"
-    echo "----------------------"
-    chown -R postgres:postgres $(getent passwd postgres | cut -d: -f6)
-        su - postgres -c "echo \"${REPLICATE_FROM}:${REPLICATE_PORT}:*:${REPLICATION_USER}:${REPLICATION_PASS}\" > ~/.pgpass"
-        su - postgres -c "chmod 0600 ~/.pgpass"
+    if [[ ${RUN_AS_ROOT} =~ [Ff][Aa][Ll][Ss][Ee] ]];then
+      echo -e "[Entrypoint] \e[1;31m Setup data permissions for replication as a normal user \033[0m"
+      chown -R "${USER_NAME}":"${DB_GROUP_NAME}" $(getent passwd postgres | cut -d: -f6)
+      echo "${REPLICATE_FROM}:${REPLICATE_PORT}:*:${REPLICATION_USER}:${REPLICATION_PASS}" > /home/"${USER_NAME}"/.pgpass
+      chmod 600 /home/"${USER_NAME}"/.pgpass
+      chown -R "${USER_NAME}":"${DB_GROUP_NAME}"  /home/"${USER_NAME}"/.pgpass
+      non_root_permission "${USER_NAME}" "${DB_GROUP_NAME}"
+
+    else
+      chown -R postgres:postgres "${DATADIR}" ${WAL_ARCHIVE}
+      chmod -R 750 "${DATADIR}" ${WAL_ARCHIVE}
+      echo -e "[Entrypoint] \e[1;31m Setup data permissions for replication as root user \033[0m"
+      chown -R postgres:postgres $(getent passwd postgres | cut -d: -f6)
+      su - postgres -c "echo \"${REPLICATE_FROM}:${REPLICATE_PORT}:*:${REPLICATION_USER}:${REPLICATION_PASS}\" > ~/.pgpass"
+      su - postgres -c "chmod 0600 ~/.pgpass"
+    fi
 }
 
 function streaming_replication {
-until su - postgres -c "${PG_BASEBACKUP} -X stream -h ${REPLICATE_FROM} -p ${REPLICATE_PORT} -D ${DATADIR} -U ${REPLICATION_USER} -R -vP -w --label=gis_pg_custer"
-	do
-		echo "Waiting for master to connect..."
-		sleep 1s
-		if [[ "$(ls -A ${DATADIR})" ]]; then
-			echo "Need empty folder. Cleaning directory..."
-			rm -rf ${DATADIR}/*
-		fi
-	done
+  until START_COMMAND "${PG_BASEBACKUP} -X stream -h ${REPLICATE_FROM} -p ${REPLICATE_PORT} -D ${DATADIR} -U ${REPLICATION_USER} -R -vP -w --label=gis_pg_custer"
+    do
+      echo -e "[Entrypoint] \e[1;31m Waiting for master to connect... \033[0m"
+      sleep 1s
+      if [[ "$(ls -A "${DATADIR}")" ]]; then
+        echo -e "[Entrypoint] \e[1;31m Need empty folder. Cleaning directory... \033[0m"
+        rm -rf "${DATADIR:?}/"*
+      fi
+    done
 
 }
 
@@ -492,24 +538,94 @@ function over_write_conf() {
     cat "${ROOT_CONF}"/extra.conf >> "${ROOT_CONF}"/postgresql.conf
   fi
 
+
 }
+
 
 function extension_install() {
   DATABASE=$1
+  DB_EXTENSION=$2
   IFS=':'
-  read -a strarr <<< "$ext"
+  read -a strarr <<< "${DB_EXTENSION}"
   EXTENSION_NAME=${strarr[0]}
   EXTENSION_VERSION=${strarr[1]}
   if [[ -z ${EXTENSION_VERSION} ]];then
     if [[ ${EXTENSION_NAME} != 'pg_cron' ]]; then
       echo -e "\e[32m [Entrypoint] Enabling extension \e[1;31m ${EXTENSION_NAME} \e[32m in the database : \e[1;31m ${DATABASE} \033[0m"
-      psql ${DATABASE} -U ${POSTGRES_USER} -p 5432 -h localhost -c "CREATE EXTENSION IF NOT EXISTS \"${EXTENSION_NAME}\" cascade;"
+      psql "${DATABASE}" -U ${POSTGRES_USER} -p 5432 -h localhost -c "CREATE EXTENSION IF NOT EXISTS \"${EXTENSION_NAME}\" cascade;"
     fi
   else
-    echo -e "\e[32m [Entrypoint] Installing extension \e[1;31m ${EXTENSION_NAME}  \e[32m with version \e[1;31m ${EXTENSION_VERSION} \e[32m in the database : \e[1;31m ${DATABASE} \033[0m"
     if [[ ${EXTENSION_NAME} != 'pg_cron' ]]; then
-      psql ${DATABASE} -U ${POSTGRES_USER} -p 5432 -h localhost -c "CREATE EXTENSION IF NOT EXISTS \"${EXTENSION_NAME}\" WITH VERSION '${EXTENSION_VERSION}' cascade;"
+      pattern="${EXTENSION_NAME}--"
+      last_numbers=()
+      for file in "$EXTDIR"/"${pattern}"*; do
+        filename=$(basename "$file" .sql)
+        if [[ "$filename" == *"--"* ]]; then
+          last_number=$(echo "$filename" | awk -F '--' '{print $NF}')
+          if [[ ! " ${last_numbers[@]} " =~ " $last_number " ]]; then
+    	      last_numbers+=("$last_number")
+          fi
+        fi
+      done
+      if [[ " ${last_numbers[@]} " =~ " $EXTENSION_VERSION " ]]; then
+        echo -e "\e[32m [Entrypoint] Installing extension \e[1;31m ${EXTENSION_NAME}  \e[32m with version \e[1;31m ${EXTENSION_VERSION} \e[32m in the database : \e[1;31m ${DATABASE} \033[0m"
+        psql "${DATABASE}" -U ${POSTGRES_USER} -p 5432 -h localhost -c "CREATE EXTENSION IF NOT EXISTS \"${EXTENSION_NAME}\" WITH VERSION '${EXTENSION_VERSION}' cascade;"
+      else
+        echo -e "\e[32m [Entrypoint] Extension \e[1;31m ${EXTENSION_NAME}  \e[32m with version \e[1;31m ${EXTENSION_VERSION} \e[32m is not available for install, available versions to install are \e[1;31m  "${last_numbers[@]}" \033[0m"
+      fi
+
     fi
   fi
+
+}
+
+function directory_checker() {
+  DATA_PATH=$1
+  if [ -d "$DATA_PATH" ];then
+    DB_USER_PERM=$(stat -c '%U' "${DATA_PATH}")
+    DB_GRP_PERM=$(stat -c '%G' "${DATA_PATH}")
+    if [[ ${DB_USER_PERM} != "${USER}" ]] &&  [[ ${DB_GRP_PERM} != "${GROUP}"  ]];then
+      chown -R "${USER}":"${GROUP}" "${DATA_PATH}"
+    fi
+  fi
+
+}
+function non_root_permission() {
+  USER="$1"
+  GROUP="$2"
+  path_envs=("${DATADIR}" "${WAL_ARCHIVE}" "${SCRIPTS_LOCKFILE_DIR}" "${CONF_LOCKFILE_DIR}" "${EXTRA_CONF_DIR}" "${SSL_DIR}" "${POSTGRES_INITDB_WALDIR}")
+  for dir_names in "${path_envs[@]}";do
+    if [ ! -z "${dir_names}" ];then
+      directory_checker "${dir_names}"
+    fi
+  done
+  services=("/usr/lib/postgresql/" "/etc/" "/var/log/postgresql" "/var/run/!(secrets)" "/var/lib/" "/usr/bin" "/tmp" "/scripts")
+  for paths in "${services[@]}"; do
+    directory_checker "${paths}"
+  done
+  chmod -R 750 "${DATADIR}" ${WAL_ARCHIVE}
+
+}
+
+function role_check() {
+  ROLE_NAME=$1
+  echo "Creating user $1"
+  echo -e "\e[32m [Entrypoint] Creating/Updating user \e[1;31m $1  \033[0m"
+  RESULT=$(su - postgres -c "psql postgres -t -c \"SELECT 1 FROM pg_roles WHERE rolname = '$ROLE_NAME'\"")
+  COMMAND="ALTER"
+  if [ -z "$RESULT" ]; then
+    export COMMAND="CREATE"
+  fi
+
+}
+
+function role_creation() {
+  ROLE_NAME=$1
+  ROLE_STATUS=$2
+  ROLE_PASS=$3
+  STATEMENT="$COMMAND USER \"$ROLE_NAME\" WITH ${ROLE_STATUS} ENCRYPTED PASSWORD '$ROLE_PASS';"
+  echo "$STATEMENT" > /tmp/setup_user.sql
+  su - postgres -c "psql postgres -f /tmp/setup_user.sql"
+  rm /tmp/setup_user.sql
 
 }
