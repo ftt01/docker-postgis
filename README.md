@@ -25,6 +25,7 @@
     - [Lockfile](#lockfile)
   - [Docker secrets](#docker-secrets)
   - [Running the container](#running-the-container)
+    - [Rootless mode](#rootless-mode)
     - [Using the terminal](#using-the-terminal)
     - [Convenience docker-compose.yml](#convenience-docker-composeyml)
   - [Connect via psql](#connect-via-psql)
@@ -271,6 +272,13 @@ POSTGRES_MULTIPLE_EXTENSIONS=postgis,pgrouting:3.4.0
 where `pgrouting:3.4.0` The extension name is fixed with the version name with the delimiter being a
 colon.
 
+**Note** In some cases, some versions of extensions might not be available for
+install. To enable them you can do the following inside the container:
+```bash
+wget --directory-prefix /usr/share/postgresql/15/extension/ https://raw.githubusercontent.com/postgres/postgres/master/contrib/hstore/hstore--1.1--1.2.sql
+```
+Then proceed to install it the normal way.
+
 #### Shared preload libraries
 
 Some PostgreSQL extensions require shared_preload_libraries to be specified in the conf files.
@@ -355,7 +363,7 @@ This image uses the initial PostgreSQL values which disables the archiving optio
 * `-e WAL_SIZE=4GB`
 * `-e MIN_WAL_SIZE=2048MB`
 * `-e WAL_SEGSIZE=1024`
-* `-e MAINTAINANCE_WORK_MEM=128MB`
+* `-e MAINTENANCE_WORK_MEM=128MB`
 
 #### Configure networking
 
@@ -431,6 +439,24 @@ Currently, `POSTGRES_PASS`, `POSTGRES_USER`, `POSTGRES_DB`, `SSL_CERT_FILE`,
 
 ## Running the container
 
+## Rootless mode
+
+You can run the container in rootless mode. This can be achieved by setting the env variable
+`RUN_AS_ROOT=false`. By default, this setting is set to `true` to allow the container to run as root for backward 
+compatibility with older images.
+
+With `RUN_AS_ROOT=false` you can additionally set the following environment variables to enable you 
+to pass user id and group id into the container.
+
+```bash
+POSTGRES_UID=1000
+POSTGRES_GID=1000
+USER=postgresuser
+GROUP_NAME=postgresusers
+```
+
+If you do not pass the UID and GID, the container will use the defaults specified in the container.
+
 ### Using the terminal
 
 To create a running container do:
@@ -500,7 +526,7 @@ By default, the lockfile is generated in `/docker-entrypoint-initdb.d` but it ca
  -v /data:/data
  ```
 
-Currently, you can pass `.sql`, `.sql.gz` and `.sh` files as mounted volumes.
+Currently, you can pass `.sql`, `.sql.gz`, `.py` and `.sh` files as mounted volumes.
 
 ```shell
 docker run -d -v `pwd`/setup-db.sql:/docker-entrypoint-initdb.d/setup-db.sql kartoza/postgis
@@ -704,7 +730,7 @@ Slave settings:
 - **DESTROY_DATABASE_ON_RESTART**: Default is `True`. Set to 'False' to prevent this behavior. A
   replicant will always destroy its current database on restart, because it will try to sync again
   from `master` and avoid inconsistencies.
-- **PROMOTE_MASTER**: Default none. If set to any value then the current replicant
+- **PROMOTE_MASTER**: Default false. If set to `true` then the current replicant
   will be promoted to master. In some cases when the `master` container has failed, we might want
   to use our `replicant` as `master` for a while. However, the promoted replicant will break
   consistencies and is not able to revert to replicant anymore, unless it is destroyed and

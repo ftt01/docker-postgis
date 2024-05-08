@@ -2,7 +2,7 @@
 # Base stage                                                                 #
 ##############################################################################
 ARG DISTRO=debian
-ARG IMAGE_VERSION=bullseye
+ARG IMAGE_VERSION=bookworm
 ARG IMAGE_VARIANT=slim
 FROM $DISTRO:$IMAGE_VERSION-$IMAGE_VARIANT AS postgis-base
 LABEL maintainer="Tim Sutton<tim@kartoza.com>"
@@ -23,11 +23,13 @@ RUN set -eux \
     && apt-get update \
     && apt-get -y --no-install-recommends install \
         locales gnupg2 wget ca-certificates rpl pwgen software-properties-common  iputils-ping \
-        apt-transport-https curl gettext \
-    && dpkg-divert --local --rename --add /sbin/initctl
+        apt-transport-https curl gettext pgxnclient cmake && \
+    apt-get -y install build-essential autoconf  libxml2-dev zlib1g-dev netcat-openbsd gdal-bin \
+    figlet toilet gosu; \
+    # verify that the binary works
+	gosu nobody true && \
+    dpkg-divert --local --rename --add /sbin/initctl
 
-RUN apt-get -y update; apt-get -y install build-essential autoconf  libxml2-dev zlib1g-dev netcat gdal-bin \
-    figlet toilet
 
 # Generating locales takes a long time. Utilize caching by runnig it by itself
 # early in the build process.
@@ -54,6 +56,8 @@ RUN if [ -z "${GENERATE_ALL_LOCALE}" ] || [ $GENERATE_ALL_LOCALE -eq 0 ]; \
 	&& /usr/sbin/locale-gen
 
 RUN update-locale ${LANG}
+
+
 # Cleanup resources
 RUN apt-get -y --purge autoremove  \
     && apt-get clean \
@@ -68,10 +72,11 @@ FROM postgis-base AS postgis-prod
 
 # Reset ARG for version
 ARG IMAGE_VERSION
-ARG POSTGRES_MAJOR_VERSION=15
+ARG POSTGRES_MAJOR_VERSION=16
 ARG POSTGIS_MAJOR_VERSION=3
-ARG POSTGIS_MINOR_RELEASE=3
-ARG TIMESCALE_VERSION=2-2.9.1
+ARG POSTGIS_MINOR_RELEASE=4
+# https://packagecloud.io/timescale/timescaledb
+ARG TIMESCALE_VERSION=2-2.11.2
 ARG BUILD_TIMESCALE=false
 
 
@@ -79,8 +84,8 @@ ARG BUILD_TIMESCALE=false
 RUN set -eux \
     && export DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
-    && sh -c "echo \"deb http://apt.postgresql.org/pub/repos/apt/ ${IMAGE_VERSION}-pgdg main\" > /etc/apt/sources.list.d/pgdg.list" \
-    && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc -O- | apt-key add - \
+    && wget -O- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor |  sh -c 'cat > /usr/share/keyrings/postgresql.gpg' > /dev/null \
+    && echo deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt/ ${IMAGE_VERSION}-pgdg main | tee /etc/apt/sources.list.d/pgdg.list 2>/dev/null \
     && apt-get -y --purge autoremove \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
@@ -92,18 +97,19 @@ RUN set -eux \
 # We add postgis as well to prevent build errors (that we dont see on local builds)
 # on docker hub e.g.
 # The following packages have unmet dependencies:
-#TODO add postgresql-${POSTGRES_MAJOR_VERSION}-cron back when it's available
+
 RUN set -eux \
     && export DEBIAN_FRONTEND=noninteractive \
     &&  apt-get update \
     && apt-get -y --no-install-recommends install postgresql-client-${POSTGRES_MAJOR_VERSION} \
         postgresql-common postgresql-${POSTGRES_MAJOR_VERSION} \
         postgresql-${POSTGRES_MAJOR_VERSION}-postgis-${POSTGIS_MAJOR_VERSION} \
-        netcat postgresql-${POSTGRES_MAJOR_VERSION}-ogr-fdw \
+        postgresql-${POSTGRES_MAJOR_VERSION}-ogr-fdw \
         postgresql-${POSTGRES_MAJOR_VERSION}-postgis-${POSTGIS_MAJOR_VERSION}-scripts \
         postgresql-plpython3-${POSTGRES_MAJOR_VERSION} postgresql-${POSTGRES_MAJOR_VERSION}-pgrouting \
         postgresql-server-dev-${POSTGRES_MAJOR_VERSION}  postgresql-${POSTGRES_MAJOR_VERSION}-cron \
-        postgresql-${POSTGRES_MAJOR_VERSION}-mysql-fdw
+        postgresql-${POSTGRES_MAJOR_VERSION}-mysql-fdw && \
+        pgxn install h3
 
 # TODO a case insensitive match would be more robust
 RUN if [ "${BUILD_TIMESCALE}" = "true" ]; then \
@@ -114,9 +120,8 @@ RUN if [ "${BUILD_TIMESCALE}" = "true" ]; then \
         apt-get -y --no-install-recommends install timescaledb-${TIMESCALE_VERSION}-postgresql-${POSTGRES_MAJOR_VERSION} timescaledb-tools;\
     fi;
 
-RUN  echo $POSTGRES_MAJOR_VERSION >/tmp/pg_version.txt
-RUN  echo $POSTGIS_MAJOR_VERSION >/tmp/pg_major_version.txt
-RUN  echo $POSTGIS_MINOR_RELEASE >/tmp/pg_minor_version.txt
+RUN  echo $POSTGRES_MAJOR_VERSION >/tmp/pg_version.txt && echo $POSTGIS_MAJOR_VERSION >/tmp/pg_major_version.txt && \
+     echo $POSTGIS_MINOR_RELEASE >/tmp/pg_minor_version.txt
 ENV \
     PATH="$PATH:/usr/lib/postgresql/${POSTGRES_MAJOR_VERSION}/bin"
 # Compile pointcloud extension
@@ -144,9 +149,9 @@ RUN chmod +x *.sh
 RUN set -eux \
     && /scripts/setup.sh;rm /scripts/.pass_*
 RUN echo 'figlet -t "Kartoza Docker PostGIS"' >> ~/.bashrc
-VOLUME /var/lib/postgresql
 
-ENTRYPOINT /scripts/docker-entrypoint.sh
+
+ENTRYPOINT ["/bin/bash", "/scripts/docker-entrypoint.sh"]
 
 
 ##############################################################################
@@ -159,9 +164,9 @@ COPY ./scenario_tests/utils/requirements.txt /lib/utils/requirements.txt
 RUN set -eux \
     && export DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
-    && apt-get -y --no-install-recommends install python3-pip \
+    && apt-get -y --no-install-recommends install python3-pip procps \
     && apt-get -y --purge autoremove \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install -r /lib/utils/requirements.txt
+RUN pip3 install -r /lib/utils/requirements.txt --break-system-packages

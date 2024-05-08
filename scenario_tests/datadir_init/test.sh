@@ -5,30 +5,68 @@ set -e
 
 source ../test-env.sh
 
-# Run service
-docker-compose up -d pg-default pg-new pg-recreate
-
-if [[ -n "${PRINT_TEST_LOGS}" ]]; then
-  docker-compose logs -f &
+if [[ $(dpkg -l | grep "docker-compose") > /dev/null ]];then
+    VERSION='docker-compose'
+  else
+    VERSION='docker compose'
 fi
 
-sleep 60
 
-services=("pg-default" "pg-new" "pg-recreate")
+# Run service for root user
+${VERSION} up -d pg-local pg-default pg-new pg-recreate
+
+if [[ -n "${PRINT_TEST_LOGS}" ]]; then
+  ${VERSION} logs -f &
+fi
+
+sleep 30
+
+services=("pg-local" "pg-default" "pg-new" "pg-recreate")
 
 for service in "${services[@]}"; do
 
   # Execute tests
-  until docker-compose exec -T $service pg_isready; do
+  until ${VERSION} exec -T $service pg_isready; do
     sleep 5
     echo "Wait service to be ready"
   done;
   echo "Execute test for $service"
-  docker-compose exec -T $service /bin/bash /tests/test.sh
+  ${VERSION} exec -T $service /bin/bash /tests/test.sh
 
 done
 
 # special meta test to check the setup
 bash ./test_custom_waldir.sh
 
-docker-compose down -v
+${VERSION} down -v
+
+
+# Run service for none root user
+mkdir default-pg-data-dir
+
+${VERSION} -f docker-compose-gs.yml up -d pg-local pg-default pg-new pg-recreate
+
+if [[ -n "${PRINT_TEST_LOGS}" ]]; then
+  ${VERSION} -f docker-compose-gs.yml logs -f &
+fi
+
+sleep 30
+
+services=("pg-local" "pg-default" "pg-new" "pg-recreate")
+
+for service in "${services[@]}"; do
+
+  # Execute tests
+  until ${VERSION} -f docker-compose-gs.yml exec -T $service pg_isready; do
+    sleep 5
+    echo "Wait service to be ready"
+  done;
+  echo "Execute test for $service"
+  ${VERSION} -f docker-compose-gs.yml exec -T $service /bin/bash /tests/test.sh
+
+done
+
+# special meta test to check the setup
+#bash ./test_custom_waldir_gs.sh
+
+${VERSION} -f docker-compose-gs.yml down -v

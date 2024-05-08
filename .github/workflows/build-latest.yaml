@@ -1,19 +1,5 @@
 name: build-latest
 on:
-#  workflow_dispatch:
-#    inputs:
-#      distro:
-#        description: Base image distro
-#        required: true
-#        default: debian
-#      imageVersion:
-#        description: Base distro image version/release
-#        required: true
-#        default: bullseye
-#      imageVariant:
-#        description: Base image variant
-#        required: true
-#        default: slim
   workflow_dispatch:
   pull_request:
     branches:
@@ -27,11 +13,15 @@ jobs:
     strategy:
       matrix:
         postgresMajorVersion:
-          - 15
+          - 16
         postgisMajorVersion:
           - 3
         postgisMinorRelease:
-          - 3
+          - 4
+        imageVersion:
+          - imageDistro: debian
+            imageDistroVersion: bookworm
+            imageDistroVariant: slim
         scenario:
           - datadir_init
           - streaming_replication
@@ -39,19 +29,16 @@ jobs:
           - extensions
           - logical_replication
           - init_scripts
-        include:
-          - distro: debian
-            imageVersion: bullseye
-            imageVariant: slim
+          - multiple_databases
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
       - name: Build image for testing
         id: docker_build_testing_image
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile
@@ -59,14 +46,14 @@ jobs:
           load: true
           tags: kartoza/postgis:manual-build
           build-args: |
-            DISTRO=${{ matrix.distro }}
-            IMAGE_VERSION=${{ matrix.imageVersion }}
-            IMAGE_VARIANT=${{ matrix.imageVariant }}
+            DISTRO=${{ matrix.imageVersion.imageDistro }}
+            IMAGE_VERSION=${{ matrix.imageVersion.imageDistroVersion }}
+            IMAGE_VARIANT=${{ matrix.imageVersion.imageDistroVariant }}
             LANGS=en_US.UTF-8,id_ID.UTF-8
             GENERATE_ALL_LOCALE=0
             POSTGRES_MAJOR_VERSION=${{ matrix.postgresMajorVersion }}
             POSTGIS_MAJOR_VERSION=${{ matrix.postgisMajorVersion }}
-            POSTGIS_MINOR_VERSION=${{ matrix.postgresMinorVersion }}
+            POSTGIS_MINOR_VERSION=${{ matrix.postgisMinorRelease }}
           cache-from: |
            type=gha,scope=test
            type=gha,scope=prod
@@ -89,29 +76,29 @@ jobs:
     strategy:
       matrix:
         postgresMajorVersion:
-          - 15
+          - 16
         postgisMajorVersion:
           - 3
         postgisMinorRelease:
-          - 3
-        include:
-          - distro: debian
-            imageVersion: bullseye
-            imageVariant: slim
+          - 4
+        imageVersion:
+          - imageDistro: debian
+            imageDistroVersion: bookworm
+            imageDistroVariant: slim
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
       - name: Login to DockerHub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
       - name: Docker meta
         id: docker_meta
-        uses: docker/metadata-action@v3
+        uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_REPO}}/postgis
           tags: |
@@ -121,7 +108,7 @@ jobs:
 
       - name: Build image for testing
         id: docker_build_testing_image
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile
@@ -129,14 +116,14 @@ jobs:
           tags: |
             ${{ steps.docker_meta.outputs.tags }}-${{ matrix.postgresMajorVersion }}-${{ matrix.postgisMajorVersion }}.${{ matrix.postgisMinorRelease }}
           build-args: |
-            DISTRO=${{ matrix.distro }}
-            IMAGE_VERSION=${{ matrix.imageVersion }}
-            IMAGE_VARIANT=${{ matrix.imageVariant }}
+            DISTRO=${{ matrix.imageVersion.imageDistro }}
+            IMAGE_VERSION=${{ matrix.imageVersion.imageDistroVersion }}
+            IMAGE_VARIANT=${{ matrix.imageVersion.imageDistroVariant }}
             LANGS=en_US.UTF-8,id_ID.UTF-8
             GENERATE_ALL_LOCALE=0
             POSTGRES_MAJOR_VERSION=${{ matrix.postgresMajorVersion }}
             POSTGIS_MAJOR_VERSION=${{ matrix.postgisMajorVersion }}
-            POSTGIS_MINOR_VERSION=${{ matrix.postgresMinorVersion }}
+            POSTGIS_MINOR_VERSION=${{ matrix.postgisMinorRelease }}
           cache-from: |
            type=gha,scope=test
            type=gha,scope=prod
