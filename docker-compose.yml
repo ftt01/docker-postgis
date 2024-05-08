@@ -38,6 +38,7 @@ services:
       - POSTGRES_PASS=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_HOST=db
+      - CRON_SCHEDULE="0 0 * * 0" ## once per week
     restart: on-failure
     depends_on:
       db:
