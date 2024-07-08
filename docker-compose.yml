@@ -1,5 +1,4 @@
 # docker-compose build
-version: '3.9'
 volumes:
   dbbackups:
   postgis-data:
@@ -10,7 +9,7 @@ services:
     container_name: pg_db_container
     image: kartoza/postgis:${POSTGRES_MAJOR_VERSION}-${POSTGIS_MAJOR_VERSION}.${POSTGIS_MINOR_RELEASE}
     volumes:
-      - postgis-data:/var/lib/postgresql
+      - postgis-data:/var/lib/docker/volumes/docker-postgis_postgis-data/_data
       - dbbackups:/backups
     environment:
       # If you need to create multiple database you can add coma separated databases eg gis,data
@@ -27,13 +26,12 @@ services:
     healthcheck:
       test: "PGPASSWORD=docker pg_isready -h 127.0.0.1 -U postgres -d meteo"
 
-
   dbbackups:
     container_name: pg_backup_container
     image: kartoza/pg-backup:${POSTGRES_MAJOR_VERSION}-${POSTGIS_MAJOR_VERSION}.${POSTGIS_MINOR_RELEASE}
     hostname: pg-backups
     volumes:
-      - dbbackups:/backups
+      - dbbackups:/var/lib/docker/volumes/docker-postgis_dbbackups/_data
     environment:
       - DUMPPREFIX=PG_db
       - POSTGRES_USER=postgres
