@@ -6,7 +6,7 @@ DEFAULT_DATADIR="/var/lib/postgresql/${POSTGRES_MAJOR_VERSION}/main"
 # Commented for documentation. You can specify the location of
 # pg_wal directory/volume using the following environment variable:
 # POSTGRES_INITDB_WALDIR (default value is unset)
-DEFAULT_SCRIPTS_LOCKFILE_DIR="/docker-entrypoint.initdb.d"
+DEFAULT_SCRIPTS_LOCKFILE_DIR="/docker-entrypoint-initdb.d"
 DEFAULT_CONF_LOCKFILE_DIR="/settings"
 DEFAULT_EXTRA_CONF_DIR="/settings"
 ROOT_CONF="/etc/postgresql/${POSTGRES_MAJOR_VERSION}/main"
@@ -508,7 +508,7 @@ function configure_replication_permissions {
 }
 
 function streaming_replication {
-  until START_COMMAND "${PG_BASEBACKUP} -X stream -h ${REPLICATE_FROM} -p ${REPLICATE_PORT} -D ${DATADIR} -U ${REPLICATION_USER} -R -vP -w --label=gis_pg_custer"
+  until START_COMMAND "${PG_BASEBACKUP} -X stream -h ${REPLICATE_FROM} -p ${REPLICATE_PORT} -D ${DATADIR} -U ${REPLICATION_USER}  -R -vP -w --label=gis_pg_custer"
     do
       echo -e "[Entrypoint] \e[1;31m Waiting for master to connect... \033[0m"
       sleep 1s

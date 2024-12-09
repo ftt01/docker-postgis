@@ -11,16 +11,23 @@ on:
 jobs:
   deploy-image:
     runs-on: ubuntu-latest
+    #timeout-minutes: 30
+    if: |
+      github.actor != 'dependabot[bot]' &&
+      !(
+        contains(github.event.pull_request.title, '[skip-release]') ||
+        contains(github.event.comment.body, '/skiprelease')
+      ) && github.event.workflow_run.conclusion == 'success'
     env:
       latest-ref: refs/heads/develop
     strategy:
       matrix:
         postgresMajorVersion:
-          - 16
+          - 17
         postgisMajorVersion:
           - 3
         postgisMinorRelease:
-          - 4
+          - 5
         imageVersion:
           - imageDistro: debian
             imageDistroVersion: bookworm
@@ -37,52 +44,29 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
-      
+
       - name: Get Current Date
         id: current_date
-        shell: python
-        run: |
-          import datetime
-          now = datetime.datetime.utcnow()
-          print(f'::set-output name=formatted::{now:%Y.%m.%d}')
+        run: echo "formatted=$(date -u +%Y.%m.%d)" >> $GITHUB_OUTPUT
 
-      - name: Build base image
-        id: docker_build_base
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          file: Dockerfile
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_REPO }}/postgis:base
-            ${{ secrets.DOCKERHUB_REPO }}/postgis:base-${{  matrix.imageVersion.imageDistro }}-${{ matrix.imageVersion.imageDistroVersion }}-${{ matrix.imageVersion.imageDistroVariant }}
-          build-args: |
-            DISTRO=${{ matrix.imageVersion.imageDistro }}
-            IMAGE_VERSION=${{ matrix.imageVersion.imageDistroVersion }}
-            IMAGE_VARIANT=${{ matrix.imageVersion.imageDistroVariant }}
-            GENERATE_ALL_LOCALE=1
-            POSTGRES_MAJOR_VERSION=${{ matrix.postgresMajorVersion }}
-            POSTGIS_MAJOR_VERSION=${{ matrix.postgisMajorVersion }}
-            POSTGIS_MINOR_VERSION=${{ matrix.postgisMinorRelease }}
-          cache-from: |
-            type=gha,scope=test
-            type=gha,scope=prod
-            type=gha,scope=base
-          cache-to: type=gha,scope=base
-          target: postgis-base
+      - name: Check if image exists on Docker Hub
+        id: check_hub_image_exists
+        run: |
+          docker login --username ${{ secrets.DOCKERHUB_USERNAME }} --password ${{ secrets.DOCKERHUB_PASSWORD }}
+          TOKEN=$(curl -s -H "Content-Type: application/json" -X POST -d '{"username": "'${{ secrets.DOCKERHUB_USERNAME }}'", "password": "'${{ secrets.DOCKERHUB_PASSWORD }}'"}' https://hub.docker.com/v2/users/login/ | jq -r .token)
+          check_image=$(curl --silent -f --head -lL https://hub.docker.com/v2/repositories/kartoza/postgis/tags/${{ matrix.postgresMajorVersion }}-${{ matrix.postgisMajorVersion }}.${{ matrix.postgisMinorRelease }}/ | head -n 1 | cut -d ' ' -f2) >> $GITHUB_OUTPUT
 
       - name: Build prod image
         id: docker_build_prod
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           file: Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_REPO }}/postgis:${{ matrix.postgresMajorVersion }}
-            ${{ secrets.DOCKERHUB_REPO }}/postgis:${{ matrix.postgresMajorVersion }}-${{ matrix.postgisMajorVersion }}
+            ${{ secrets.DOCKERHUB_REPO }}/postgis
+            ${{ steps.check_hub_image_exists.outputs.check_image == 200 && format('{0}/postgis:{1}-{2}.{3}', secrets.DOCKERHUB_REPO,  matrix.postgresMajorVersion, matrix.postgisMajorVersion, matrix.postgisMinorRelease) || null}}
             ${{ secrets.DOCKERHUB_REPO }}/postgis:${{ matrix.postgresMajorVersion }}-${{ matrix.postgisMajorVersion }}.${{ matrix.postgisMinorRelease }}
             ${{ secrets.DOCKERHUB_REPO }}/postgis:${{ matrix.postgresMajorVersion }}-${{ matrix.postgisMajorVersion }}.${{ matrix.postgisMinorRelease }}--v${{ steps.current_date.outputs.formatted }}
           build-args: |
@@ -94,8 +78,46 @@ jobs:
             POSTGIS_MAJOR_VERSION=${{ matrix.postgisMajorVersion }}
             POSTGIS_MINOR_VERSION=${{ matrix.postgisMinorRelease }}
           cache-from: |
-            type=gha,scope=test
             type=gha,scope=prod
-            type=gha,scope=base
-          cache-to: type=gha,scope=prod
+          #cache-to: type=gha,scope=prod
           target: postgis-prod
+
+  publish_release_artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: |
+      github.actor != 'dependabot[bot]' &&
+      !(
+        contains(github.event.pull_request.title, '[skip-release]') ||
+        contains(github.event.comment.body, '/skiprelease') 
+      ) &&  github.event.workflow_run.conclusion == 'success'
+    needs: [ deploy-image ]
+    strategy:
+      matrix:
+        postgresMajorVersion:
+          - 17
+        postgisMajorVersion:
+          - 3
+        postgisMinorRelease:
+          - 5
+    steps:
+      - name: Checkout code
+        id: git_checkout
+        uses: actions/checkout@v4
+        with:
+          ref: 'develop'
+
+      - name: Get Current Date
+        id: current_date
+        run: echo "formatted=$(date -u +%Y.%m.%d)" >> $GITHUB_OUTPUT
+
+      - name: Get Latest Commit Hash
+        id: latest_commit_hash
+        run: echo "commit=$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
+
+      - name: publish_release
+        id: tag_releases
+        run: |
+          gh release create v${{ matrix.postgresMajorVersion }}.${{ matrix.postgisMajorVersion }}.${{ matrix.postgisMinorRelease }}--v${{ steps.current_date.outputs.formatted }}--${{ steps.latest_commit_hash.outputs.commit }} --notes ${{ steps.latest_commit_hash.outputs.commit }} --target develop --repo $GITHUB_REPOSITORY
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
